@@ -1,0 +1,7 @@
+.env
+outputs/
+jobs.json
+__pycache__/
+*.png
+*.jpg
+*.mp4
