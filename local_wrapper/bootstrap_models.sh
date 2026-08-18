@@ -21,13 +21,14 @@ done
 
 cd "$M/loras"
 for m in high low; do
-  wget -c "$HF/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_${m}_noise.safetensors"
+  wget -c -O "i2v_lightx2v_${m}_noise_model.safetensors" \
+    "$HF/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_${m}_noise.safetensors"
 done
 
 mkdir -p "$M/upscale_models" && cd "$M/upscale_models"
-wget -c -O 2x-LiveAction.pth \
+wget -c -O 2xLiveActionV1_SPAN_490000.pth \
   "$HF/Phips/2xLiveAction_SPAN/resolve/main/2xLiveAction_SPAN.pth" || \
-  echo "WARN: upscaler URL moved — grab any 2x SPAN/ESRGAN model and name it 2x-LiveAction.pth"
+  echo "WARN: upscaler URL moved — install it as 2xLiveActionV1_SPAN_490000.pth"
 
 cd /workspace/ComfyUI/custom_nodes
 if [ -d ComfyUI-Frame-Interpolation ]; then
@@ -37,4 +38,4 @@ else
 fi
 pip install -r ComfyUI-Frame-Interpolation/requirements-no-cupy.txt
 
-echo "BOOTSTRAP DONE — restart ComfyUI (or the pod) so new nodes/models load"
+echo "BOOTSTRAP DONE — restart ComfyUI, then run validate_runtime.py --check-models"

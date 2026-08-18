@@ -1,0 +1,152 @@
+openapi: 3.1.0
+info:
+  title: Wan Video Generation API
+  version: 1.0.0
+  description: Tenant-scoped asynchronous image-to-video generation.
+servers:
+  - url: http://127.0.0.1:8787
+security:
+  - bearerAuth: []
+paths:
+  /v1/openapi.yaml:
+    get:
+      operationId: getOpenApiContract
+      responses:
+        '200': {description: This OpenAPI contract}
+  /v1/models:
+    get:
+      operationId: listModels
+      responses:
+        '200': {description: Available model adapters}
+  /v1/generations:
+    post:
+      operationId: createGeneration
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          schema: {type: string, minLength: 8, maxLength: 128}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateGeneration'}
+      responses:
+        '200': {description: Existing generation returned for an idempotent replay}
+        '202': {description: Accepted, content: {application/json: {schema: {$ref: '#/components/schemas/Generation'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+    get:
+      operationId: listGenerations
+      parameters:
+        - {in: query, name: cursor, schema: {type: string}}
+        - {in: query, name: limit, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {in: query, name: status, schema: {$ref: '#/components/schemas/GenerationStatus'}}
+        - {in: query, name: model, schema: {type: string}}
+      responses:
+        '200': {description: Owner-scoped generation page}
+        '400': {$ref: '#/components/responses/Error'}
+  /v1/generations/{generation_id}:
+    parameters:
+      - {$ref: '#/components/parameters/GenerationId'}
+    get:
+      operationId: getGeneration
+      responses:
+        '200': {description: Generation, content: {application/json: {schema: {$ref: '#/components/schemas/Generation'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteGeneration
+      responses:
+        '204': {description: Metadata, retained input, and result deleted}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/generations/{generation_id}/cancel:
+    parameters:
+      - {$ref: '#/components/parameters/GenerationId'}
+    post:
+      operationId: cancelGeneration
+      responses:
+        '200': {description: Cancelled or already cancelled}
+        '202': {description: Provider cancellation requested}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /v1/generations/{generation_id}/retry:
+    parameters:
+      - {$ref: '#/components/parameters/GenerationId'}
+    post:
+      operationId: retryGeneration
+      responses:
+        '202': {description: Retry queued}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '410': {$ref: '#/components/responses/Error'}
+  /v1/generations/{generation_id}/result:
+    parameters:
+      - {$ref: '#/components/parameters/GenerationId'}
+    get:
+      operationId: downloadGenerationResult
+      responses:
+        '200': {description: Locally stored video}
+        '302': {description: Redirect to a short-lived signed object URL}
+        '409': {$ref: '#/components/responses/Error'}
+        '410': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+  parameters:
+    GenerationId:
+      in: path
+      name: generation_id
+      required: true
+      schema: {type: string}
+  responses:
+    Error:
+      description: Stable API error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+  schemas:
+    CreateGeneration:
+      type: object
+      required: [prompt]
+      properties:
+        prompt: {type: string, minLength: 1, maxLength: 4000}
+        model: {type: string, example: wan-2.2-draft}
+        image_b64: {type: string, contentEncoding: base64}
+        image_path: {type: string, description: Loopback development only}
+        seconds: {type: number, minimum: 2, maximum: 7.5, default: 5}
+        seed: {type: integer, minimum: 0}
+      oneOf:
+        - required: [image_b64]
+        - required: [image_path]
+    GenerationStatus:
+      type: string
+      enum: [queued, starting_pod, generating, uploading, done, error, cancelled]
+    Generation:
+      type: object
+      required: [id, object, status, model, progress, created]
+      properties:
+        id: {type: string}
+        object: {const: generation}
+        status: {$ref: '#/components/schemas/GenerationStatus'}
+        model: {type: string}
+        prompt: {type: string}
+        seed: {type: integer}
+        result_url: {type: [string, 'null']}
+        progress:
+          type: object
+          properties:
+            stage: {$ref: '#/components/schemas/GenerationStatus'}
+            percent: {type: integer, minimum: 0, maximum: 100}
+            estimated: {const: false}
+    Error:
+      type: object
+      required: [error, request_id]
+      properties:
+        request_id: {type: string}
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            details: {}
