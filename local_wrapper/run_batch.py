@@ -72,25 +72,33 @@ def resolve_pod_id(api_key, pod_id=None, pod_name=None):
     return pod_id
 
 
-POD_TEMPLATE = {
-    "imageName": "hearmeman/comfyui-wan-template:v26",
-    "gpuTypeIds": ["NVIDIA GeForce RTX 5090"],
-    "gpuCount": 1,
-    "networkVolumeId": "4tcigizrep",
-    "containerDiskInGb": 50,
-    "dataCenterIds": ["EU-RO-1"],
-    "cloudType": "SECURE",
-    "ports": ["8188/http", "8888/http"],
-    "env": {"download_wan22": "true"},
-    "minRAMPerGPU": 40,
-}
+def pod_template():
+    """Pod spec for create_pod, configurable via env. RUNPOD_VOLUME_ID is the one
+    setting every deployment must provide (your network volume holding the models —
+    see INSTALL.md). minRAMPerGPU=40 is load-bearing: hosts with less container RAM
+    OOM-kill ComfyUI while staging the 14B model pair."""
+    volume_id = os.environ.get("RUNPOD_VOLUME_ID")
+    if not volume_id:
+        raise RuntimeError("set RUNPOD_VOLUME_ID (Storage -> your network volume id)")
+    return {
+        "imageName": os.environ.get("RUNPOD_IMAGE", "hearmeman/comfyui-wan-template:v26"),
+        "gpuTypeIds": [os.environ.get("RUNPOD_GPU", "NVIDIA GeForce RTX 5090")],
+        "gpuCount": 1,
+        "networkVolumeId": volume_id,
+        "containerDiskInGb": 50,
+        "dataCenterIds": [os.environ.get("RUNPOD_DC", "EU-RO-1")],
+        "cloudType": "SECURE",
+        "ports": ["8188/http", "8888/http"],
+        "env": {"download_wan22": "true"},
+        "minRAMPerGPU": 40,
+    }
 
 
 def create_pod(api_key, name):
     """Create a FRESH pod on the shared volume. In EU-RO-1 a stopped pod loses its
     GPU within the hour and start returns HTTP 500 forever; creating a new pod finds
     any host with a free GPU instead of begging one specific host."""
-    body = json.dumps(dict(POD_TEMPLATE, name=name)).encode()
+    body = json.dumps(dict(pod_template(), name=name)).encode()
     req = urllib.request.Request(
         f"{API}/pods", data=body, method="POST",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
