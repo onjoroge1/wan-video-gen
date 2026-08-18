@@ -1,8 +1,8 @@
 # Zero → running: self-hosted Wan 2.2 video API on Runpod
 
 What you get: a localhost (optionally LAN/remote) HTTP API that turns
-`image + prompt → 5s–7.5s video clip` at roughly **$0.03–0.12/clip** of GPU
-time, with pods that start, heal, scale, and stop themselves.
+`image + prompt → 5s–7.5s video clip`, with pods that start, heal, scale, and
+stop themselves. Per-attempt cost is measured from the actual worker rate.
 
 ## 1. Runpod account
 
@@ -14,7 +14,8 @@ time, with pods that start, heal, scale, and stop themselves.
 Storage → New Network Volume:
 - **Datacenter**: pick one showing high availability for your GPU
   (default config assumes `EU-RO-1`; override with `RUNPOD_DC`).
-- **Size**: 250 GB (~$17/mo). The Wan 2.2 model set + extras is ~150 GB.
+- **Size**: 250 GB. The Wan 2.2 model set + extras is roughly 150 GB; verify
+  current storage pricing in your selected region before provisioning.
 - Put its id in `.env` as `RUNPOD_VOLUME_ID`.
 
 Everything else (pods) is disposable; the volume is what you'd cry about.
@@ -36,14 +37,38 @@ downloads the core Wan 2.2 models to the volume. Later pods boot in ~90s.
 Open the pod's **JupyterLab** (Runpod console → pod → Connect → port 8888),
 open a Terminal, paste the contents of `bootstrap_models.sh`, run it
 (~30 GB: fp8 models, fast-LoRAs, upscaler, RIFE). Then restart the pod's
-ComfyUI (easiest: Runpod console → pod → Restart).
+ComfyUI (easiest: Runpod console → pod → Restart). Validate the installed
+models and custom nodes before paying for a full generation:
+
+```bash
+python3 validate_runtime.py --check-models \
+  --server https://<POD_ID>-8188.proxy.runpod.net
+```
 
 ## 5. Run the API server
 
+Install the lightweight API-only persistence dependencies (separate from the
+large Wan model environment):
+
 ```bash
-set -a; source .env; set +a
+python3 -m pip install -r requirements-api.txt
+```
+
+For production, set `DATABASE_URL` and the `WAN_S3_*` values shown in
+`.env.example`. Keep the bucket private. Postgres stores job metadata; generated
+video bytes go to S3-compatible object storage. Without those variables the
+wrapper deliberately falls back to `outputs/jobs.json` and local video files.
+
+To import existing JSON history after configuring Postgres:
+
+```bash
+python3 migrate_jobs.py --dry-run
+python3 migrate_jobs.py
+```
+
+```bash
 python3 api_server.py
-# [api] listening on http://127.0.0.1:8787  (pool: <pod-id>; idle-stop 45 min)
+# [api] binding 127.0.0.1:8787
 ```
 
 Smoke test:
@@ -51,12 +76,17 @@ Smoke test:
 ```bash
 curl -X POST http://127.0.0.1:8787/generate -H 'Content-Type: application/json' \
   -d '{"image_path": "'$PWD'/your_test.jpg", "prompt": "slow cinematic push-in", "draft": true}'
-curl http://127.0.0.1:8787/status/<job_id>     # queued → generating → done (~2-5 min)
-curl -o clip.mp4 http://127.0.0.1:8787/result/<job_id>
+curl http://127.0.0.1:8787/status/<job_id>     # queued → generating → uploading → done
+curl -L -o clip.mp4 http://127.0.0.1:8787/result/<job_id>
 ```
 
 See `README.md` for the full API contract (quality tiers, seconds, seeds,
 batches, remote access with `WAN_BIND` + `WAN_API_TOKEN` + `image_b64`).
+
+For a multi-user app, configure `WAN_API_KEYS_JSON` and use `/v1/generations`.
+Set `WAN_CORS_ORIGINS` to the exact UI origins that may call the API. The v1
+contract is checked in as `openapi.yaml`; legacy endpoints remain available for
+existing scripts.
 
 ## Operating notes (learned the expensive way)
 
@@ -72,6 +102,8 @@ batches, remote access with `WAN_BIND` + `WAN_API_TOKEN` + `image_b64`).
 - **The watchdog fails toward $0/hr**: if pods run 30 min with zero completed
   jobs, everything is stopped and active jobs are failed loudly. A wedged
   pipeline should never be a silent $18/day.
-- **Costs at current prices**: draft ~$0.03, final ~$0.035, HQ ~$0.12 per
-  5s clip on a $0.99/hr RTX 5090; volume ~$17/mo; a stopped pod bills $0.
+- **Measure costs from your own jobs**: every attempt records elapsed seconds,
+  the pod's hourly rate, and `estimated_gpu_cost`. Cold start, retries, and idle
+  time make fixed per-clip estimates misleading; reconcile estimates against
+  RunPod billing before setting product prices.
 - Never commit `.env`. The `.gitignore` here enforces that; keep it.

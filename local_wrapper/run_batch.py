@@ -39,6 +39,16 @@ def rp(method, path, api_key):
         return json.loads(body) if body else {}
 
 
+def get_pod(pod_id, api_key):
+    """Return the provider's current pod record."""
+    return rp("GET", f"/pods/{pod_id}", api_key)
+
+
+def pod_is_running(pod_id, api_key):
+    """Reconcile local state with RunPod instead of trusting process memory."""
+    return get_pod(pod_id, api_key).get("desiredStatus") == "RUNNING"
+
+
 def resolve_pod_ids(api_key, pod_name=None):
     """ALL pod ids whose name starts with pod_name (or RUNPOD_POD_NAME).
     Multiple matches = a deliberate worker pool (e.g. a 4090 + a 5090)."""
@@ -110,21 +120,29 @@ def create_pod(api_key, name):
 
 
 def terminate_pod(pod_id, api_key):
-    try:
-        rp("DELETE", f"/pods/{pod_id}", api_key)
-        print(f"terminated pod {pod_id}")
-    except Exception as e:
-        print(f"WARNING: could not terminate {pod_id}: {e}", file=sys.stderr)
+    """Terminate a pod and fail loudly when RunPod does not confirm the call."""
+    last_error = None
+    for attempt in range(3):
+        try:
+            rp("DELETE", f"/pods/{pod_id}", api_key)
+            print(f"terminated pod {pod_id}")
+            return True
+        except Exception as e:
+            last_error = e
+            print(f"terminate attempt {attempt + 1} failed: {e}", file=sys.stderr)
+            if attempt < 2:
+                time.sleep(10)
+    raise RuntimeError(f"could not terminate pod {pod_id}: {last_error}")
 
 
 def start_pod(pod_id, api_key):
     """Start a pod, retrying transient Runpod API errors. The start endpoint
     returns 5xx under host contention (observed 10x in a row 2026-08-13); one
     eventually succeeds, so failing on the first is throwing away good jobs."""
-    pod = rp("GET", f"/pods/{pod_id}", api_key)
+    pod = get_pod(pod_id, api_key)
     if pod.get("desiredStatus") == "RUNNING":
         print(f"pod {pod_id} already running")
-        return
+        return pod
     print(f"starting pod {pod_id}...")
     last_err = None
     for attempt in range(6):
@@ -145,25 +163,36 @@ def start_pod(pod_id, api_key):
         raise RuntimeError(f"pod start kept failing after 6 attempts ({last_err})")
     for _ in range(60):
         time.sleep(5)
-        pod = rp("GET", f"/pods/{pod_id}", api_key)
+        pod = get_pod(pod_id, api_key)
         if pod.get("desiredStatus") == "RUNNING":
             print("pod is running")
-            return
+            return pod
     raise RuntimeError("pod did not reach RUNNING within 5 minutes")
 
 
 def stop_pod(pod_id, api_key):
+    """Stop a pod and only return after provider state confirms zero GPU billing."""
     print(f"stopping pod {pod_id}...")
+    last_error = None
     for attempt in range(3):
         try:
             rp("POST", f"/pods/{pod_id}/stop", api_key)
-            print("pod stopped — no further GPU billing")
-            return
+            for _ in range(12):
+                pod = get_pod(pod_id, api_key)
+                if pod.get("desiredStatus") in ("EXITED", "TERMINATED"):
+                    print("pod stopped — no further GPU billing")
+                    return pod
+                time.sleep(5)
+            last_error = RuntimeError("provider did not report EXITED within 60 seconds")
         except Exception as e:
+            last_error = e
             print(f"stop attempt {attempt + 1} failed: {e}", file=sys.stderr)
+        if attempt < 2:
             time.sleep(10)
-    print(f"WARNING: could not stop pod {pod_id} — stop it manually in the "
-          f"Runpod console NOW to avoid idle billing!", file=sys.stderr)
+    message = (f"could not confirm pod {pod_id} stopped: {last_error}. "
+               "Stop it manually in the RunPod console NOW to avoid idle billing")
+    print(f"CRITICAL: {message}", file=sys.stderr)
+    raise RuntimeError(message)
 
 
 def wait_for_comfyui(server, timeout=600):

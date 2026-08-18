@@ -1,0 +1,31 @@
+name: Local wrapper tests
+
+on:
+  pull_request:
+    paths:
+      - "local_wrapper/**"
+      - "tests/test_local_wrapper.py"
+      - ".github/workflows/local-wrapper-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "local_wrapper/**"
+      - "tests/test_local_wrapper.py"
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate workflow structure
+        run: python local_wrapper/validate_runtime.py
+      - name: Run wrapper tests
+        run: python -m unittest -v tests.test_local_wrapper
+      - name: Compile wrapper modules
+        run: python -m py_compile local_wrapper/*.py

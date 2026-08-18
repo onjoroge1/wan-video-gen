@@ -39,6 +39,22 @@ _opener.addheaders = [("User-Agent", "wan-client/1.0")]
 urllib.request.install_opener(_opener)
 
 
+class GenerationError(Exception):
+    """The request or workflow is invalid; retrying would spend money again."""
+
+
+class InfrastructureError(RuntimeError):
+    """The worker or network failed; retrying on healthy infrastructure may work."""
+
+
+class GenerationCancelled(Exception):
+    """The caller cancelled a queued or running provider job."""
+
+
+class CancellationError(InfrastructureError):
+    """A provider cancellation could not be confirmed."""
+
+
 def http_json(url, payload=None):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"} if data else {})
@@ -89,26 +105,42 @@ def patch_workflow(wf, image_name, prompt, seed, frames=None):
 
     missing = [k for k, ok in patched.items() if not ok]
     if missing:
-        sys.exit(f"error: could not find node(s) to patch: {missing}. "
-                 f"Check that the workflow was exported in API format and contains "
-                 f"LoadImage / CLIPTextEncode / KSampler nodes.")
+        raise GenerationError(
+            f"could not find node(s) to patch: {missing}. Check that the workflow "
+            "was exported in API format and contains LoadImage / "
+            "CLIPTextEncode / KSampler nodes."
+        )
     return wf
 
 
-def wait_for_result(server, prompt_id, poll=5, timeout=1800):
+def cancel_prompt(server, prompt_id):
+    """Atomically cancel one ComfyUI job; never use the global interrupt endpoint."""
+    try:
+        response = http_json(f"{server}/api/jobs/{prompt_id}/cancel", {})
+        return bool(response.get("cancelled"))
+    except Exception as exc:
+        raise CancellationError(f"could not cancel provider job: {exc}") from exc
+
+
+def wait_for_result(server, prompt_id, poll=5, timeout=1800, should_cancel=None):
     start = time.time()
     while time.time() - start < timeout:
+        if should_cancel and should_cancel():
+            cancel_prompt(server, prompt_id)
+            raise GenerationCancelled("generation cancelled by user")
         hist = http_json(f"{server}/history/{prompt_id}")
         if prompt_id in hist:
             entry = hist[prompt_id]
             status = entry.get("status", {})
             if status.get("status_str") == "error":
-                sys.exit(f"error: generation failed on server: {json.dumps(status)[:500]}")
+                raise GenerationError(
+                    f"generation failed on server: {json.dumps(status)[:500]}"
+                )
             outputs = entry.get("outputs", {})
             if outputs:
                 return outputs
         time.sleep(poll)
-    sys.exit("error: timed out waiting for generation")
+    raise InfrastructureError("timed out waiting for generation")
 
 
 def download_outputs(server, outputs, dest_stem):
